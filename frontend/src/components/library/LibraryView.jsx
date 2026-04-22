@@ -1,219 +1,225 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { Grid, List, RefreshCw, AlertCircle, BookOpen } from 'lucide-react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import { Grid, List, RefreshCw, AlertCircle, BookOpen, Loader2 } from 'lucide-react';
 import { useApp } from '../../store/AppContext';
 import { api } from '../../utils/api';
 import { progressStore, folderStore, recentStore } from '../../utils/storage';
-import { FileCard } from './FileCard';
+import FileCard from './FileCard';
 
 export default function LibraryView() {
   const { state, actions } = useApp();
   const [progresses, setProgresses] = useState({});
   const [refreshing, setRefreshing] = useState(false);
+  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
+  const pollRef = useRef(null);
 
   useEffect(() => {
-    fetchFiles();
-    loadLocal();
+    loadFiles();
+    loadLocalData();
+    return () => clearInterval(pollRef.current);
   }, []);
 
-  async function fetchFiles() {
+  async function loadFiles() {
     actions.setFilesLoading(true);
     try {
       const res = await api.getFiles();
-      actions.setFiles(res.files ?? []);
-      if (res.demo_mode != null) actions.setAuth(state.isAuthenticated, res.demo_mode);
+      actions.setFiles(res.files || []);
+      // If the backend is still building the cache, poll until it finishes
+      if (res.refresh_in_progress) {
+        setBackgroundRefreshing(true);
+        startPolling();
+      } else {
+        setBackgroundRefreshing(false);
+      }
     } catch (e) {
       actions.setFilesError(e.message);
     }
   }
 
-  async function loadLocal() {
-    try {
-      // Progress map
-      const progs = await progressStore.getAll();
-      const pm = {};
-      for (const p of progs) pm[p.fileId] = p;
-      setProgresses(pm);
+  function startPolling() {
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await api.getFiles();
+        actions.setFiles(res.files || []);
+        if (!res.refresh_in_progress) {
+          setBackgroundRefreshing(false);
+          clearInterval(pollRef.current);
+        }
+      } catch (_) {}
+    }, 4000); // poll every 4 seconds
+  }
 
-      // Folders
-      const folders = await folderStore.getAll();
-      actions.setFolders(folders);
+  async function loadLocalData() {
+    const allProgress = await progressStore.getAll();
+    const map = {};
+    for (const p of allProgress) map[p.fileId] = p;
+    setProgresses(map);
 
-      // File assignments — load ALL at once, no per-folder loop
-      const assignments = {};
-      for (const folder of folders) {
-        const rows = await folderStore.getFilesInFolder(folder.id);
-        for (const row of rows) assignments[row.fileId] = row.folderId;
-      }
-      actions.setAssignments(assignments);
+    const folders = await folderStore.getAll();
+    actions.setFolders(folders);
 
-      // Recent
-      const recent = await recentStore.getAll(30);
-      actions.setRecent(recent);
-    } catch (e) {
-      console.error('loadLocal error:', e);
-    }
+    const assignments = await folderStore.getAllAssignments();
+    const assignMap = {};
+    for (const a of assignments) assignMap[a.fileId] = a.folderId;
+    actions.setFileAssignments(assignMap);
+
+    const recent = await recentStore.getAll(20);
+    actions.setRecent(recent);
   }
 
   async function refresh() {
     setRefreshing(true);
     try {
-      const res = await api.refreshFiles();
-      actions.setFiles(res.files ?? []);
-    } catch {
-      await fetchFiles();
-    } finally {
-      setRefreshing(false);
+      const res = await api.refresh();
+      // New backend returns immediately; poll until done
+      if (res.message && res.message.includes('background')) {
+        setBackgroundRefreshing(true);
+        startPolling();
+      } else {
+        await loadFiles();
+      }
+    } catch (e) {
+      await loadFiles();
     }
+    setRefreshing(false);
   }
 
-  // Derive displayed file list from active section
   const displayedFiles = useMemo(() => {
-    switch (state.activeSection) {
-      case 'search':
-        return state.searchResults;
-
-      case 'recent': {
-        const recentMap = Object.fromEntries(state.files.map(f => [f.id, f]));
-        return state.recentFiles
-          .map(r => recentMap[r.fileId])
-          .filter(Boolean);
-      }
-
-      case 'folder': {
-        if (!state.activeFolderId) return state.files;
-        const inFolder = new Set(
-          Object.entries(state.fileAssignments)
-            .filter(([, fid]) => fid === state.activeFolderId)
-            .map(([fileId]) => fileId)
-        );
-        return state.files.filter(f => inFolder.has(f.id));
-      }
-
-      default:
-        return state.files;
+    let files = state.files;
+    if (state.activeSection === 'search') return state.searchResults;
+    if (state.activeSection === 'recent') {
+      const ids = state.recentFiles.map(r => r.fileId);
+      return ids.map(id => state.files.find(f => f.id === id)).filter(Boolean);
     }
-  }, [
-    state.files, state.activeSection, state.searchResults,
-    state.recentFiles, state.activeFolderId, state.fileAssignments,
-  ]);
+    if (state.activeSection === 'folder' && state.activeFolderId) {
+      const inFolder = Object.entries(state.fileAssignments)
+        .filter(([, fid]) => fid === state.activeFolderId).map(([fileId]) => fileId);
+      return files.filter(f => inFolder.includes(f.id));
+    }
+    return files;
+  }, [state.files, state.activeSection, state.searchResults, state.recentFiles, state.activeFolderId, state.fileAssignments]);
 
-  const emptyMessage = useMemo(() => {
-    if (state.activeSection === 'folder') return { title: 'Folder is empty', body: 'Move PDFs here from your library using the ⋯ menu on any book.' };
-    if (state.activeSection === 'recent') return { title: 'Nothing opened yet', body: 'Open any PDF from your library to see it here.' };
-    if (state.activeSection === 'search') return { title: 'No results', body: `No PDFs match "${state.searchQuery}".` };
-    return { title: 'Library is empty', body: 'Upload PDF files to your Telegram channel — they will appear here automatically.' };
-  }, [state.activeSection, state.searchQuery]);
-
-  const isGrid = state.viewMode === 'grid';
+  const sectionTitle = useMemo(() => {
+    if (state.activeSection === 'search') return `Results for "${state.searchQuery}"`;
+    if (state.activeSection === 'recent') return 'Recently Opened';
+    if (state.activeSection === 'folder' && state.activeFolderId) {
+      const f = state.folders.find(f => f.id === state.activeFolderId);
+      return f ? `📁 ${f.name}` : 'Folder';
+    }
+    return 'My Library';
+  }, [state.activeSection, state.searchQuery, state.activeFolderId, state.folders]);
 
   return (
-    <div className="flex-1 overflow-y-auto flex flex-col">
-      {/* ── Toolbar strip ─────────────────────────────────────────────────── */}
-      <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2
-                      border-b border-ink-800/40 bg-ink-950/95 backdrop-blur-sm flex-shrink-0">
-        <span className="text-ink-600 text-xs font-medium">
-          {displayedFiles.length} {displayedFiles.length === 1 ? 'document' : 'documents'}
-        </span>
-
+    <div className="flex-1 overflow-y-auto p-4 md:p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4 md:mb-6">
+        <div>
+          <h2 className="font-display text-lg md:text-xl font-semibold text-paper-100">{sectionTitle}</h2>
+          <div className="flex items-center gap-2 mt-0.5">
+            <p className="text-ink-500 text-xs md:text-sm">
+              {displayedFiles.length} {displayedFiles.length === 1 ? 'document' : 'documents'}
+            </p>
+            {/* Background refresh indicator */}
+            {backgroundRefreshing && (
+              <span className="flex items-center gap-1 text-xs text-amber-400">
+                <Loader2 size={11} className="animate-spin" />
+                syncing…
+              </span>
+            )}
+          </div>
+        </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={refresh}
-            disabled={refreshing || state.filesLoading}
-            className="p-1.5 text-ink-500 hover:text-ink-200 rounded-lg hover:bg-ink-800/50 active:scale-90 transition-all disabled:opacity-30"
-            title="Refresh"
-          >
-            <RefreshCw size={14} className={refreshing || state.filesLoading ? 'animate-spin' : ''}/>
+          <button onClick={refresh} disabled={refreshing || backgroundRefreshing}
+            className="p-2 text-ink-500 hover:text-ink-200 rounded-lg hover:bg-ink-800/50 transition-all" title="Refresh">
+            <RefreshCw size={15} className={(refreshing || backgroundRefreshing) ? 'animate-spin' : ''} />
           </button>
-
-          {/* Grid / list toggle */}
           <div className="flex bg-ink-900 border border-ink-800/50 rounded-lg p-0.5">
             {[['grid', Grid], ['list', List]].map(([mode, Icon]) => (
-              <button
-                key={mode}
-                onClick={() => actions.setViewMode(mode)}
-                className={`p-1.5 rounded-md transition-all ${
-                  state.viewMode === mode ? 'bg-ink-700 text-ink-100' : 'text-ink-500 hover:text-ink-300'
-                }`}
-              >
-                <Icon size={13}/>
+              <button key={mode} onClick={() => actions.setViewMode(mode)}
+                className={`p-1.5 rounded-md transition-all ${state.viewMode === mode ? 'bg-ink-700 text-ink-100' : 'text-ink-500 hover:text-ink-300'}`}>
+                <Icon size={14} />
               </button>
             ))}
           </div>
         </div>
       </div>
 
-      {/* ── Content ───────────────────────────────────────────────────────── */}
-      <div className="flex-1 p-3 sm:p-5">
-        {/* Loading skeletons */}
-        {state.filesLoading && (
-          <div className={isGrid
-            ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3'
-            : 'space-y-1'
-          }>
-            {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} list={!isGrid}/>)}
+      {/* Loading skeletons */}
+      {state.filesLoading && (
+        <div className={state.viewMode === 'grid'
+          ? 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4'
+          : 'space-y-1'}>
+          {Array.from({ length: 8 }).map((_, i) => <SkeletonCard key={i} list={state.viewMode === 'list'} />)}
+        </div>
+      )}
+
+      {/* Error */}
+      {state.filesError && !state.filesLoading && (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <AlertCircle size={32} className="text-red-400 mb-3" />
+          <p className="text-ink-300 mb-1 font-medium">Failed to load files</p>
+          <p className="text-ink-500 text-sm mb-4">{state.filesError}</p>
+          <button onClick={loadFiles} className="btn-primary text-sm">Retry</button>
+        </div>
+      )}
+
+      {/* Empty (but cache may still be loading) */}
+      {!state.filesLoading && !state.filesError && displayedFiles.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <BookOpen size={40} className="text-ink-700 mb-4" />
+          <p className="text-ink-400 font-medium mb-1">
+            {backgroundRefreshing
+              ? 'Loading your PDFs from Telegram…'
+              : state.activeSection === 'folder' ? 'This folder is empty' : 'No PDFs found'}
+          </p>
+          <p className="text-ink-600 text-sm">
+            {backgroundRefreshing
+              ? 'This only happens once. Files will appear automatically.'
+              : state.activeSection === 'folder'
+                ? 'Assign PDFs to this folder from the library'
+                : 'Add PDF files to your Telegram channel'}
+          </p>
+          {backgroundRefreshing && <Loader2 size={20} className="animate-spin text-ink-600 mt-4" />}
+        </div>
+      )}
+
+      {/* Grid */}
+      {!state.filesLoading && !state.filesError && displayedFiles.length > 0 && state.viewMode === 'grid' && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 animate-fade-in">
+          {displayedFiles.map(file => (
+            <FileCard key={file.id} file={file} progress={progresses[file.id]} />
+          ))}
+        </div>
+      )}
+
+      {/* List */}
+      {!state.filesLoading && !state.filesError && displayedFiles.length > 0 && state.viewMode === 'list' && (
+        <div className="space-y-0.5 animate-fade-in">
+          <div className="hidden md:flex items-center gap-4 px-4 py-2 text-[11px] font-medium text-ink-600 uppercase tracking-wider">
+            <div className="w-8" /><div className="flex-1">Title</div>
+            <div className="w-20 text-right">Size</div><div className="w-24 text-right">Added</div>
+            <div className="w-20 text-right">Progress</div><div className="w-6" />
           </div>
-        )}
-
-        {/* Error */}
-        {!state.filesLoading && state.filesError && (
-          <div className="flex flex-col items-center justify-center py-20 text-center gap-3 px-4">
-            <AlertCircle size={36} className="text-red-400"/>
-            <p className="text-ink-200 font-medium">Failed to load files</p>
-            <p className="text-ink-500 text-sm max-w-xs">{state.filesError}</p>
-            <button onClick={fetchFiles} className="btn-primary text-sm mt-2">Try again</button>
-          </div>
-        )}
-
-        {/* Empty */}
-        {!state.filesLoading && !state.filesError && displayedFiles.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-20 text-center gap-3 px-6">
-            <BookOpen size={40} className="text-ink-800"/>
-            <p className="text-ink-300 font-medium">{emptyMessage.title}</p>
-            <p className="text-ink-600 text-sm max-w-xs leading-relaxed">{emptyMessage.body}</p>
-          </div>
-        )}
-
-        {/* Files */}
-        {!state.filesLoading && !state.filesError && displayedFiles.length > 0 && (
-          isGrid ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 animate-fade-in">
-              {displayedFiles.map(f => (
-                <FileCard key={f.id} file={f} progress={progresses[f.id]}/>
-              ))}
-            </div>
-          ) : (
-            <div className="space-y-0.5 animate-fade-in">
-              {displayedFiles.map(f => (
-                <FileCard key={f.id} file={f} progress={progresses[f.id]}/>
-              ))}
-            </div>
-          )
-        )}
-      </div>
-
-      {/* Space for mobile bottom nav */}
-      <div className="h-16 md:h-0 flex-shrink-0"/>
+          {displayedFiles.map(file => (
+            <FileCard key={file.id} file={file} progress={progresses[file.id]} listMode />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function Skeleton({ list }) {
+function SkeletonCard({ list }) {
   if (list) return (
-    <div className="flex items-center gap-3 px-3 py-3 rounded-xl">
-      <div className="w-9 h-11 rounded-lg shimmer flex-shrink-0"/>
-      <div className="flex-1 space-y-2">
-        <div className="h-3 w-4/5 shimmer rounded"/>
-        <div className="h-2 w-1/2 shimmer rounded"/>
-      </div>
+    <div className="flex items-center gap-4 px-4 py-3 rounded-xl">
+      <div className="w-8 h-10 rounded-lg shimmer flex-shrink-0" />
+      <div className="flex-1"><div className="h-3 w-3/4 rounded shimmer mb-1.5" /><div className="h-2 w-1/2 rounded shimmer" /></div>
     </div>
   );
   return (
     <div className="rounded-2xl overflow-hidden border border-ink-800/30">
-      <div className="shimmer" style={{ height: 128 }}/>
-      <div className="p-2.5 space-y-1.5">
-        <div className="h-3 w-4/5 shimmer rounded"/>
-        <div className="h-2 w-1/2 shimmer rounded"/>
-      </div>
+      <div className="h-36 shimmer" />
+      <div className="p-3"><div className="h-3 w-3/4 rounded shimmer mb-1.5" /><div className="h-2 w-1/2 rounded shimmer" /></div>
     </div>
   );
 }
