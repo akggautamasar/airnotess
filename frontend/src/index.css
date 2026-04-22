@@ -1,0 +1,127 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html {
+    height: 100%;
+    /* Prevent iOS bounce scroll */
+    overscroll-behavior: none;
+    /* Smooth momentum scroll on iOS */
+    -webkit-overflow-scrolling: touch;
+  }
+
+  body {
+    height: 100%;
+    @apply bg-ink-950 text-ink-100 font-body;
+    -webkit-font-smoothing:  antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Respect iOS safe areas */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  #root { height: 100%; }
+
+  /* Global selection */
+  ::selection { @apply bg-ink-600/60 text-paper-50; }
+
+  /* Thin scrollbars everywhere */
+  ::-webkit-scrollbar              { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track        { background: transparent; }
+  ::-webkit-scrollbar-thumb        { @apply bg-ink-800 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover  { @apply bg-ink-700; }
+
+  /* Remove mobile tap highlight */
+  * { -webkit-tap-highlight-color: transparent; }
+
+  /* Number inputs — hide spinners */
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+}
+
+@layer components {
+  /* Glass panel */
+  .glass {
+    @apply bg-ink-900/90 backdrop-blur-md border border-ink-800/60;
+  }
+
+  /* Primary button */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2
+           bg-ink-600 hover:bg-ink-500 active:scale-95
+           text-paper-100 font-body font-medium
+           px-4 py-2.5 rounded-xl
+           transition-all duration-150 select-none;
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2
+           text-ink-400 hover:text-ink-100 hover:bg-ink-800/60 active:bg-ink-800
+           px-3 py-2 rounded-xl
+           transition-all duration-150 select-none;
+  }
+
+  /* Sidebar nav item */
+  .nav-item {
+    @apply flex items-center gap-3 w-full
+           px-3 py-2.5 rounded-xl
+           text-sm font-medium text-ink-400
+           hover:text-ink-100 hover:bg-ink-800/60
+           active:bg-ink-800
+           transition-all duration-150 cursor-pointer select-none;
+  }
+  .nav-item.active {
+    @apply bg-ink-800 text-ink-100 border border-ink-700/40;
+  }
+
+  /* Highlight colours (applied via class) */
+  .hl-yellow { background: rgba(251,191,36,0.35);  border-radius: 2px; }
+  .hl-green  { background: rgba(74,222,128,0.35);  border-radius: 2px; }
+  .hl-blue   { background: rgba(96,165,250,0.35);  border-radius: 2px; }
+  .hl-pink   { background: rgba(251,113,133,0.35); border-radius: 2px; }
+}
+
+/* ── PDF canvas ────────────────────────────────────────────────────────────── */
+.pdf-wrap {
+  position: relative;
+  display: block;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.55);
+  line-height: 0;
+}
+.pdf-wrap canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* ── Reading progress bar ──────────────────────────────────────────────────── */
+.progress-bar {
+  height: 2px;
+  background: linear-gradient(90deg, #967852, #c4b396);
+  transition: width 0.4s ease;
+}
+
+/* ── Skeleton shimmer ──────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  from { background-position: -200% center; }
+  to   { background-position:  200% center; }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    #1c1610 0%, #1c1610 25%,
+    #2a2018 50%,
+    #1c1610 75%, #1c1610 100%
+  );
+  background-size: 200% auto;
+  animation: shimmer 1.6s linear infinite;
+  border-radius: 6px;
+}
+
+/* ── iOS safe area helpers ─────────────────────────────────────────────────── */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 12px); }
+.pt-safe { padding-top:    env(safe-area-inset-top,    0px);  }
